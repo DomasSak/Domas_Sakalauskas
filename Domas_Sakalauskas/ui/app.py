@@ -19,6 +19,10 @@ from streamlit.errors import StreamlitAPIException
 
 import hub_tables as ht
 
+from visuals import discover
+from visuals import theme as vtheme
+from visuals.data import load as load_visual_data
+
 ROOT = Path(__file__).resolve().parent.parent
 PROC = Path(os.environ.get("HUB_DATA_DIR", ROOT / "data" / "processed"))
 
@@ -227,14 +231,37 @@ def page_players(matches, appearances, player_stats):
             show_game_table(ht.style_game_table(df, game_cols, avg_col, compare), len(df))
             scope = f"his last {n} games played" if n else "all games he played this season"
             st.caption(f"Games oldest to newest ({scope}). Values are per game, not per 90, so check the "
-                       f"minutes_played row. Pass accuracy average is calculated from summed counts; other percentage "
-                       f"stats show a simple average. {COLOUR_HELP}")
+                       f"minutes_played row. Pass accuracy, forward pass share and shot accuracy are calculated from "
+                       f"counts (season average from the summed counts). Rows marked ~ are the club system's own "
+                       f"percentage, averaged simply; their definition is not confirmed. {COLOUR_HELP}")
 
+def page_visuals():
+    st.title("Visuals")
+    visuals, errors = discover()
+    for name, msg in errors.items():
+        st.warning(f"Visual '{name}' failed to load: {msg}")
+    if not visuals:
+        st.info("No visuals found in ui/visuals/.")
+        return
+    choice = st.selectbox("Visual", list(visuals))
+    mod = visuals[choice]
+    st.caption(mod.DESCRIPTION)
+    data = load_visual_data()
+    cfg = mod.settings(st, data)
+    try:
+        fig = mod.render(data, cfg)
+    except Exception as exc:
+        st.error(f"{choice} failed: {type(exc).__name__}: {exc}")
+        return
+    if fig is None:
+        st.info("Nothing to show for these settings.")
+    else:
+        st.plotly_chart(fig, width="stretch", config=vtheme.plotly_config(choice.lower().replace(" ", "_")))
 
 # ----------------------------------------------------------------------------- main
 def main() -> None:
     st.sidebar.title("Football Analysis Hub")
-    page = st.sidebar.radio("Tool", ["Overview", "Team stats", "Player stats"])
+    page = st.sidebar.radio("Tool", ["Overview", "Team stats", "Player stats", "Visuals"])
     if st.sidebar.button("Open data folder"):
         open_folder(PROC)
     st.sidebar.divider()
@@ -251,8 +278,10 @@ def main() -> None:
         page_overview(matches, team_stats)
     elif page == "Team stats":
         page_team(matches, team_stats)
-    else:
+    elif page == "Player stats":
         page_players(matches, appearances, player_stats)
+    else:
+        page_visuals()
 
 
 main()

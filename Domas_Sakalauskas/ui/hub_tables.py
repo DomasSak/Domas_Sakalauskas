@@ -16,7 +16,7 @@ YELLOW = "background-color: rgba(227, 179, 31, 0.45)"
 RED = "background-color: rgba(218, 54, 51, 0.40)"
 
 # derived percentage metric -> the metric it should be sorted next to
-BASE_OVERRIDE = {"pass_accuracy_pct": "passes_made"}
+BASE_OVERRIDE = {"pass_accuracy_pct": "passes_made", "shot_accuracy_percent": "total_shots"}
 
 
 # ----------------------------------------------------------------------------- matches
@@ -167,6 +167,15 @@ def team_game_table(team_stats, games, period, n=None, sides=("ours", "opponent"
     return out, game_cols, avg_label, best_label
 
 
+# Player percentages that we recalculate from counts. Season value = sum(numerator) / sum(denominator) * 100.
+# Every other percentage metric is the club system's own value (its definition changes between versions): shown with "~".
+PLAYER_PERCENT_DEFS = {
+    "pass_accuracy_pct": ("passes_completed", "passes_made"),   # our own row; replaces the system's passes_success_percent
+    "passes_forward_percentage": ("passes_forward", "passes_made"),
+    "shot_accuracy_percent": ("shots_on_target", "total_shots"),
+}
+
+
 def player_game_table(appearances, player_stats, games, n, min_minutes, player_id):
     """Rows = one player's metrics, columns = the games he played (oldest -> newest), + average and best."""
     a = appearances[(appearances["player_id"] == player_id) & appearances["session_id"].isin(games["session_id"])
@@ -182,22 +191,30 @@ def player_game_table(appearances, player_stats, games, n, min_minutes, player_i
     ps = player_stats[(player_stats["player_id"] == player_id) & player_stats["session_id"].isin(sids)]
     wide = ps.pivot_table(index="metric", columns="session_id", values="value", aggfunc="first").reindex(columns=sids)
 
-    made = None
     if "passes_total" in wide.index:  # real passes = passes_total minus balls lost after a bad reception
         lost = wide.loc["pass_lost_after_reception"].fillna(0) if "pass_lost_after_reception" in wide.index else 0
-        made = wide.loc["passes_total"] - lost
-        wide.loc["passes_made"] = made
-        if "passes_completed" in wide.index:
-            wide.loc["pass_accuracy_pct"] = wide.loc["passes_completed"] / made.where(made > 0) * 100
+        wide.loc["passes_made"] = wide.loc["passes_total"] - lost
+
+    pooled = {}
+    for key, (num, den) in PLAYER_PERCENT_DEFS.items():
+        if num in wide.index and den in wide.index:
+            denom = wide.loc[den]
+            wide.loc[key] = wide.loc[num] / denom.where(denom > 0) * 100
+            total = denom.sum()
+            pooled[key] = wide.loc[num].sum() / total * 100 if total > 0 else float("nan")
+    wide = wide.drop(index="passes_success_percent", errors="ignore")  # system value uses a different definition
+
     wide = wide.loc[sorted(wide.index, key=metric_order_key)]
     top = pd.DataFrame([a["minutes_played"].to_numpy()], index=["minutes_played"], columns=sids)
     wide = pd.concat([top, wide])
 
     out, game_cols, avg_label, best_label = _finish(wide, game_labels(a), n)
-    if made is not None and "pass_accuracy_pct" in out.index and made.sum() > 0:
-        # accuracy average from SUMMED counts, not an average of per-game percentages
-        out.loc["pass_accuracy_pct", avg_label] = wide.loc["passes_completed"].sum() / made.sum() * 100
-    return out, game_cols, avg_label, best_label
+    for key, value in pooled.items():  # season average of a recalculated % = sum of counts, not mean of %
+        if key in out.index:
+            out.loc[key, avg_label] = value
+    # "~" = the club system's own percentage, averaged simply (its definition is not known / not stable)
+    marked = {k: f"{k} ~" for k in out.index if k.endswith(("_percent", "_percentage")) and k not in PLAYER_PERCENT_DEFS}
+    return out.rename(index=marked), game_cols, avg_label, best_label
 
 
 # ----------------------------------------------------------------------------- player: averages
